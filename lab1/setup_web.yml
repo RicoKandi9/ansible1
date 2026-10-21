@@ -1,0 +1,23 @@
+---
+- name: Paigalda ja käivita Nginx veebiserver
+  hosts: all
+  become: yes
+  tasks:
+    - name: Paigalda Nginx Debiani süsteemis (apt)
+      ansible.builtin.apt:
+        name: nginx
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    - name: Paigalda Nginx CentOSi süsteemis (dnf)
+      ansible.builtin.dnf:
+        name: nginx
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    - name: Veendu, et Nginx teenus töötab
+      ansible.builtin.service:
+        name: nginx
+        state: started
+        enabled: yes

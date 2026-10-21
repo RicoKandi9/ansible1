@@ -1,0 +1,11 @@
+---
+- name: Testi ühendust ja paigalda pakett
+  hosts: all
+  tasks:
+    - name: Kontrolli serveri tööaega (uptime)
+      command: uptime
+      register: uptime_output
+
+    - name: Kuva tööaeg
+      debug:
+        msg: "{{ uptime_output.stdout }}"
