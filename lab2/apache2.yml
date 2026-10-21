@@ -1,0 +1,82 @@
+---
+- name: Paigalda ja seadista veebiserver ning Userdir moodul
+  hosts: all
+  become: yes
+
+  tasks:
+    # 1. Tagame, et kasutaja 'user' eksisteerib mõlemas masinas
+    - name: Loome kasutaja 'user'
+      ansible.builtin.user:
+        name: user
+        state: present
+        create_home: yes
+
+    # 2. Apache paigaldus Debianis (apt)
+    - name: Paigalda Apache2 Debiani süsteemis
+      ansible.builtin.apt:
+        name: apache2
+        state: present
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+
+    # 3. Apache paigaldus CentOS-is (dnf/httpd)
+    - name: Paigalda Apache (httpd) CentOS-is
+      ansible.builtin.dnf:
+        name: httpd
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # 4. public_html kausta loomine
+    - name: Loome public_html kataloogi kasutajale
+      ansible.builtin.file:
+        path: /home/user/public_html
+        state: directory
+        owner: user
+        group: user
+        mode: '0755'
+
+    # 5. Userdir mooduli lubamine (Debianis)
+    - name: Lubame userdir mooduli (Debian)
+      community.general.apache2_module:
+        name: userdir
+        state: present
+      when: ansible_os_family == "Debian"
+      notify: Taaskäivita Apache Debianis
+
+    # 6. Kodulehe index.html kopeerimine
+    - name: Kopeerime kasutaja index.html faili
+      ansible.builtin.copy:
+        dest: /home/user/public_html/index.html
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <body>
+            <h1>USERi lehekylg</h1>
+            <p>Tere tulemast kasutaja isiklikule veebilehele!</p>
+          </body>
+          </html>
+        owner: user
+        group: user
+        mode: '0644'
+
+    # 7. Unikaalne vaikeleht (/var/www/html/index.html)
+    - name: Loo unikaalne vaikeleht /var/www/html/index.html
+      ansible.builtin.copy:
+        dest: /var/www/html/index.html
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <body>
+            <h1>Tere tulemast serverisse!</h1>
+            <p>Serveri hostinimi: {{ ansible_hostname }}</p>
+            <p>Serveri IP-aadress: {{ ansible_default_ipv4.address }}</p>
+          </body>
+          </html>
+        mode: '0644'
+
+  handlers:
+    - name: Taaskäivita Apache Debianis
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+      when: ansible_os_family == "Debian"
