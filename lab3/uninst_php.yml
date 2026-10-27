@@ -1,0 +1,95 @@
+---
+# =====================================================================
+# Lab 3, Iseseisev ülesanne 2: PHP eemaldamine (uninst_php.yml)
+# Fail:     /etc/ansible/playbooks/uninst_php.yml
+# Autor:    Rico Kandi (ITS24)
+# Kliendid: grupp [webservers] failis /root/hosts
+#
+# Käsud probleemse PHP versiooni käsitsi eemaldamiseks (Moodle juhend):
+#   apt-get purge php7.*
+#   apt-get purge php7.X-common
+#   apt remove php7.X*
+# Sama käsitsi praeguste versioonidega:
+#   Debian 13:  apt-get purge 'php8.*' 'libapache2-mod-php*' && apt autoremove
+#   CentOS 9:   dnf remove 'php*'
+#
+# See playbook teeb sama automaatselt: leiab KÕIK paigaldatud PHP
+# paketid (php*, libapache2-mod-php*) ja eemaldab need koos
+# seadistusfailidega (purge) ning mittevajalike sõltuvustega.
+#
+# Kontroll:  ansible-playbook --check /etc/ansible/playbooks/uninst_php.yml
+# Käivitus:  ansible-playbook /etc/ansible/playbooks/uninst_php.yml
+# Taastamine pärast testi: ansible-playbook /etc/ansible/playbooks/php.yml
+# =====================================================================
+
+- name: PHP ja sellega seotud pakettide eemaldamine
+  hosts: webservers
+  become: yes
+
+  tasks:
+    # 1. Kogume info kõigi paigaldatud pakettide kohta (apt/rpm)
+    - name: Kogu paigaldatud pakettide nimekiri
+      ansible.builtin.package_facts:
+        manager: auto
+
+    # 2. Valime välja ainult PHP-ga seotud paketid
+    - name: Leia paigaldatud PHP paketid
+      ansible.builtin.set_fact:
+        php_paketid: "{{ ansible_facts.packages.keys() | select('match', '^(php|libapache2-mod-php)') | list }}"
+
+    # 3. Näitame, mida eemaldatakse
+    - name: Näita eemaldatavaid PHP pakette
+      ansible.builtin.debug:
+        var: php_paketid
+
+    # 4. Debian: eemaldame paketid koos seadistusfailidega (= apt-get purge)
+    #    ning mittevajalikud sõltuvused (= apt autoremove)
+    - name: Eemalda PHP paketid (Debian, purge + autoremove)
+      ansible.builtin.apt:
+        name: "{{ php_paketid }}"
+        state: absent
+        purge: yes
+        autoremove: yes
+      when: ansible_os_family == "Debian" and php_paketid | length > 0
+      notify: Taaskäivita Apache Debianis
+
+    # 5. CentOS: eemaldame paketid (= dnf remove 'php*') koos sõltuvustega
+    - name: Eemalda PHP paketid (CentOS)
+      ansible.builtin.dnf:
+        name: "{{ php_paketid }}"
+        state: absent
+        autoremove: yes
+      when: ansible_os_family == "RedHat" and php_paketid | length > 0
+      notify: Taaskäivita Apache CentOS-is
+
+    # 6. Ilma PHP-ta näitaks Apache testfailide lähtekoodi - kustutame need
+    - name: Kustuta PHP testfailid
+      ansible.builtin.file:
+        path: "/var/www/html/{{ item }}"
+        state: absent
+      loop:
+        - phpinfo.php
+        - info.php
+
+    # 7. Kontroll: php käsk ei tohi enam olemas olla
+    - name: Kontrolli, kas php on veel olemas
+      ansible.builtin.command: php -v
+      register: php_kontroll
+      changed_when: false
+      failed_when: false
+
+    - name: Näita kontrolli tulemust
+      ansible.builtin.debug:
+        msg: "{{ 'PHP on eemaldatud' if php_kontroll.rc | default(0) != 0 else 'PHP on endiselt paigaldatud' }}"
+
+  handlers:
+    # Apache taaskäivitus, et PHP moodul/seadistus enam ei laeks
+    - name: Taaskäivita Apache Debianis
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+
+    - name: Taaskäivita Apache CentOS-is
+      ansible.builtin.service:
+        name: httpd
+        state: restarted

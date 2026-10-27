@@ -1,0 +1,110 @@
+---
+# =====================================================================
+# Lab 3: Veebiserveri laiendamine PHP toega (Ansible Playbook)
+# Fail:     /etc/ansible/playbooks/php.yml
+# Autor:    Rico Kandi (ITS24)
+# Kliendid: grupp [webservers] failis /root/hosts
+#           192.168.45.198 - Debian 13 (apache2, apt)
+#           192.168.45.23  - CentOS Stream 9 (httpd, dnf)
+#
+# Märkus: juhendis on fail nimega php7.yml, kuid PHP 7 pakette
+# Debian 13 ega CentOS Stream 9 repodes enam ei ole. Seepärast
+# paigaldame üldise paketi "php" (state: latest), mis toob
+# vastava distributsiooni viimase PHP versiooni.
+#
+# Kontroll:  ansible-playbook --check /etc/ansible/playbooks/php.yml
+# Käivitus:  ansible-playbook /etc/ansible/playbooks/php.yml
+# =====================================================================
+
+- name: PHP paigaldamine veebiserveritesse (Debian ja CentOS)
+  hosts: webservers
+  become: yes
+
+  tasks:
+    # 1. Debian: PHP, Apache PHP moodul ja PHP MySQL laiendus (apt)
+    - name: Paigalda php, libapache2-mod-php ja php-mysql (Debian)
+      ansible.builtin.apt:
+        name:
+          - php
+          - libapache2-mod-php
+          - php-mysql
+        state: latest
+        update_cache: yes
+      when: ansible_os_family == "Debian"
+      notify: Taaskäivita Apache Debianis
+
+    # 2. CentOS: PHP, PHP-FPM (httpd kasutab PHP-d FPM kaudu) ja MySQL laiendus (dnf)
+    - name: Paigalda php, php-fpm ja php-mysqlnd (CentOS)
+      ansible.builtin.dnf:
+        name:
+          - php
+          - php-fpm
+          - php-mysqlnd
+        state: latest
+      when: ansible_os_family == "RedHat"
+      notify: Taaskäivita Apache CentOS-is
+
+    # 3. CentOS: php-fpm teenus käima ja automaatselt käivituma.
+    #    --check režiimis paketti tegelikult ei paigaldata, seega
+    #    teenust veel pole - siis viga ignoreeritakse.
+    - name: Käivita ja luba php-fpm teenus (CentOS)
+      ansible.builtin.service:
+        name: php-fpm
+        state: started
+        enabled: yes
+      when: ansible_os_family == "RedHat"
+      ignore_errors: "{{ ansible_check_mode }}"
+
+    # 4. Apache peab töötama ja käivituma koos süsteemiga
+    #    (Debianis teenus apache2, CentOS-is httpd)
+    - name: Veendu, et Apache töötab
+      ansible.builtin.service:
+        name: "{{ 'apache2' if ansible_os_family == 'Debian' else 'httpd' }}"
+        state: started
+        enabled: yes
+
+    # 5. CentOS: ava tulemüüris http (port 80), et lehte saaks brauseris avada
+    - name: Luba http teenus firewalld-s (CentOS)
+      ansible.posix.firewalld:
+        service: http
+        permanent: yes
+        immediate: yes
+        state: enabled
+      when: ansible_os_family == "RedHat"
+
+    # 6. Iseseisev ülesanne 1: PHP testfail phpinfo.php kataloogi /var/www/html/
+    #    (esitamise juhendis nimetatud ka info.php - loome mõlemad)
+    - name: Loo PHP testfailid phpinfo.php ja info.php
+      ansible.builtin.copy:
+        dest: "/var/www/html/{{ item }}"
+        content: |
+          <?php
+          phpinfo();
+          ?>
+        mode: '0644'
+      loop:
+        - phpinfo.php
+        - info.php
+
+    # 7. Kontroll: küsime paigaldatud PHP versiooni ja kuvame selle
+    - name: Kontrolli PHP versiooni (php -v)
+      ansible.builtin.command: php -v
+      register: php_versioon
+      changed_when: false
+      failed_when: false
+
+    - name: Näita PHP versiooni
+      ansible.builtin.debug:
+        msg: "{{ php_versioon.stdout_lines[0] | default('PHP pole veel paigaldatud (--check)') }}"
+
+  handlers:
+    # Apache taaskäivitus, et uus PHP moodul/seadistus rakenduks
+    - name: Taaskäivita Apache Debianis
+      ansible.builtin.service:
+        name: apache2
+        state: restarted
+
+    - name: Taaskäivita Apache CentOS-is
+      ansible.builtin.service:
+        name: httpd
+        state: restarted
