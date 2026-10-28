@@ -1,0 +1,107 @@
+---
+# =====================================================================
+# Lab 4, Iseseisev ülesanne: MySQL root kasutaja seadistamine
+# Fail:     /root/playbooks/mysql-user.yml
+# Autor:    Rico Kandi (ITS24)
+# Kliendid: grupp [webservers] failis /root/hosts
+#
+# Eesmärk:
+#  - MySQL kasutajale root@localhost parool qwerty
+#  - paroolita sisselogimine keelatud (enne logis root sisse ilma paroolita)
+#  - ühenduse andmed faili /root/.my.cnf (õigused 0600), et root saaks
+#    käivitada mysql käske ilma parooli iga kord käsitsi sisestamata
+#
+# Kontroll:  ansible-playbook --check /root/playbooks/mysql-user.yml
+# Käivitus:  ansible-playbook /root/playbooks/mysql-user.yml
+# Test:      mysql --no-defaults -u root        -> Access denied (parool nõutud)
+#            mysql -u root -p   (parool qwerty) -> sisselogimine õnnestub
+# =====================================================================
+
+- name: MySQL root kasutaja parooli ja /root/.my.cnf seadistamine
+  hosts: webservers
+  become: yes
+
+  vars:
+    mysql_root_kasutaja: root
+    mysql_root_parool: qwerty
+    # MySQL socketi asukoht (Debianis MySQL ametlik pakett, CentOS-is AppStream)
+    mysql_socket: "{{ '/var/run/mysqld/mysqld.sock' if ansible_os_family == 'Debian' else '/var/lib/mysql/mysql.sock' }}"
+
+  tasks:
+    # 1. community.mysql moodulid vajavad kliendis Pythoni MySQL draiverit PyMySQL
+    - name: Paigalda PyMySQL (Debian)
+      ansible.builtin.apt:
+        name: python3-pymysql
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Paigalda PyMySQL (CentOS)
+      ansible.builtin.dnf:
+        name: python3-PyMySQL
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # 2. Kontrollime, kas root saab sisse ILMA paroolita (vaikimisi Debianis
+    #    auth_socket, CentOS-is tühi parool). Kui saab, siis tuleb parool seada.
+    #    Kui paroolikaitse juba töötab (korduv käivitus), jäetakse samm 3 vahele.
+    - name: Kontrolli, kas root saab sisse ilma paroolita
+      ansible.builtin.command: mysql --no-defaults -u {{ mysql_root_kasutaja }} -e "SELECT 1"
+      register: paroolita_kontroll
+      changed_when: false
+      failed_when: false
+
+    # 3. Määrame root kasutajale parooli community.mysql.mysql_user mooduliga.
+    #    - check_implicit_admin: ühendub esimesel korral root-ina ilma paroolita (socketi kaudu)
+    #    - plugin + plugin_auth_string: autentimine caching_sha2_password parooliga
+    #      (MySQL 8.4-s mysql_native_password vaikimisi puudub, auth_socket asendatakse)
+    #    - priv + append_privs: root jääb kõigi õigustega (ALL, GRANT), midagi ei eemaldata
+    #    - update_password: always - parooli haldamine, parool uuendatakse alati
+    #    --check režiimis parooli ei muudeta.
+    - name: Määra MySQL root kasutajale parool
+      community.mysql.mysql_user:
+        name: "{{ mysql_root_kasutaja }}"
+        host: localhost
+        plugin: caching_sha2_password
+        plugin_auth_string: "{{ mysql_root_parool }}"
+        update_password: always
+        priv: "*.*:ALL,GRANT"
+        append_privs: yes
+        column_case_sensitive: true
+        state: present
+        login_user: "{{ mysql_root_kasutaja }}"
+        login_unix_socket: "{{ mysql_socket }}"
+        check_implicit_admin: yes
+      when:
+        - not ansible_check_mode
+        - paroolita_kontroll.rc == 0
+
+    # 4. Ühenduse andmed faili /root/.my.cnf - ainult root saab lugeda (0600)
+    - name: Loo fail /root/.my.cnf
+      ansible.builtin.copy:
+        dest: /root/.my.cnf
+        content: |
+          [client]
+          user={{ mysql_root_kasutaja }}
+          password={{ mysql_root_parool }}
+        owner: root
+        group: root
+        mode: '0600'
+
+    # 5. Test: ilma paroolita (ilma .my.cnf-ta) EI tohi sisse saada
+    - name: Test - sisselogimine ilma paroolita peab ebaõnnestuma
+      ansible.builtin.command: mysql --no-defaults -u {{ mysql_root_kasutaja }} -e "SELECT 1"
+      register: ilma_paroolita
+      changed_when: false
+      failed_when: ilma_paroolita.rc | default(1) == 0
+
+    # 6. Test: /root/.my.cnf abil saab root sisse ilma parooli sisestamata
+    - name: Test - sisselogimine /root/.my.cnf abil
+      ansible.builtin.command: mysql -N -B -e "SELECT CONCAT(CURRENT_USER(), ' / MySQL ', @@version)"
+      register: my_cnf_test
+      changed_when: false
+
+    - name: Näita testide tulemusi
+      ansible.builtin.debug:
+        msg:
+          - "Ilma paroolita: {{ ilma_paroolita.stderr | default('--check', true) }}"
+          - "/root/.my.cnf abil: {{ my_cnf_test.stdout_lines | default(['--check'], true) | join(' | ') }}"
